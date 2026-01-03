@@ -51,23 +51,44 @@ def find_col(df, candidates):
                 return c
     return None
 
-def detect_and_read_csv(file):
-    raw = file.getvalue()
+def detect_and_read_csv(uploaded_file):
+    import io
+    import pandas as pd
 
-    try:
-        df = pd.read_csv(io.BytesIO(raw))
-        if find_col(df, COL_CANDIDATES["date"]):
-            return df
-    except:
-        pass
+    raw = uploaded_file.getvalue()
 
-    # 4列目が項目名、5列目以降が数値のCSV対応
-    df_raw = pd.read_csv(io.BytesIO(raw), header=None)
-    items = df_raw.iloc[:, 3]
-    values = df_raw.iloc[:, 4:]
-    values.index = items
-    df_t = values.T.reset_index(drop=True)
-    return df_t
+    # 1) 文字コード対応（Rapsodo系はcp932のことがある）
+    text = None
+    for enc in ("utf-8-sig", "cp932", "utf-8"):
+        try:
+            text = raw.decode(enc)
+            break
+        except Exception:
+            pass
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
+
+    # 2) 区切り文字推定（, or タブ or ;）
+    sample_lines = [ln for ln in text.splitlines() if ln.strip()][:30]
+    sample = "\n".join(sample_lines)
+    candidates = [",", "\t", ";"]
+    sep = max(candidates, key=lambda s: sample.count(s))
+
+    # 3) あなたの条件：5行目=ヘッダー、6行目以降=データ
+    #    → skiprows=4, header=0
+    df = pd.read_csv(
+        io.StringIO(text),
+        sep=sep,
+        skiprows=4,
+        header=0,
+        engine="python",
+        on_bad_lines="skip"
+    )
+
+    # 4) 念のため：空列/空行っぽいのを掃除
+    df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
+
+    return df
 
 def standardize_columns(df):
     rename = {}
