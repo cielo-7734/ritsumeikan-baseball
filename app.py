@@ -64,30 +64,37 @@ def guess_sep(text: str) -> str:
     candidates = [",", "\t", ";"]
     return max(candidates, key=lambda s: sample.count(s))
 
-
-def detect_and_read_csv(uploaded_file) -> pd.DataFrame:
-    """
-    あなたの条件：
-      - 5行目がヘッダー（列名）
-      - 6行目以降がデータ
-    """
+def detect_and_read_csv(uploaded_file):
     raw = uploaded_file.getvalue()
-    text = decode_bytes(raw)
-    sep = guess_sep(text)
 
-    # 5行目=ヘッダー → skiprows=4, header=0
+    # 文字コード対応
+    text = None
+    for enc in ("utf-8-sig", "cp932", "utf-8"):
+        try:
+            text = raw.decode(enc)
+            break
+        except Exception:
+            pass
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
+
+    # 区切り文字推定（, / タブ / ;）
+    sample_lines = [ln for ln in text.splitlines() if ln.strip()][:30]
+    sample = "\n".join(sample_lines)
+    candidates = [",", "\t", ";"]
+    sep = max(candidates, key=lambda s: sample.count(s))
+
+    # ✅ あなたの条件：5行目ヘッダー、6行目以降データ
     df = pd.read_csv(
         io.StringIO(text),
         sep=sep,
         skiprows=4,
         header=0,
         engine="python",
-        on_bad_lines="skip",
+        on_bad_lines="skip"
     )
 
-    # 空行/空列の掃除（読み込み直後にやってOK）
     df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
-
     return df
 
 
