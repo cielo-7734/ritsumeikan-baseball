@@ -1,4 +1,8 @@
 streamlit
 pandas
 numpy
-altair
+matplotlib
+pyarrow
+google-api-python-client
+google-auth
+Pillow
