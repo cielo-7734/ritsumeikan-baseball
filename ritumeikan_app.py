@@ -5,6 +5,8 @@ import seaborn as sns
 import matplotlib.font_manager as fm
 import urllib.request
 import os
+from datetime import date, timedelta
+from dateutil.relativedelta import relativedelta
 
 # --- 日本語フォント設定 ---
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
@@ -39,11 +41,10 @@ def process_data(uploaded_file):
             'Date': '日付', 'Is Strike': '判定'
         }
         df = df.rename(columns=rename_dict)
-
-        # --- 「-」と「Other」を除外 ---
         df = df[~df['球種'].isin(['-', 'Other'])]
         
-        df['日付'] = pd.to_datetime(df['日付'], errors='coerce').dt.date
+        df['datetime'] = pd.to_datetime(df['日付'], errors='coerce')
+        df['日付'] = df['datetime'].dt.date
         
         if '判定' in df.columns:
             df['ストライク数'] = df['判定'].map({'Y': 1, 'N': 0}).fillna(0)
@@ -53,10 +54,30 @@ def process_data(uploaded_file):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].replace('-', pd.NA), errors='coerce')
         
-        return player_name, file_id, df.dropna(subset=['球速', '球種'])
+        return player_name, file_id, df.dropna(subset=['球速', '球種', 'datetime'])
     except Exception as e:
         st.error(f"解析エラー: {e}")
         return "Error", file_id, pd.DataFrame()
+
+def create_summary(df):
+    if df.empty:
+        return pd.DataFrame()
+    
+    summary = df.groupby('球種').agg({
+        '球速': ['mean', 'max'], '回転数': 'mean', 'トゥルースピン': 'mean',
+        '回転効率': 'mean', '高さ変化': 'mean', '横変化': 'mean', 'ストライク数': 'mean'
+    })
+    summary.columns = [
+        '球速(平均)', '球速(最大)', '回転数', 'トゥルースピン', 
+        '回転効率(%)', '変化量(高さ)', '変化量(横)', 'ストライク率(%)'
+    ]
+    summary['ストライク率(%)'] = summary['ストライク率(%)'] * 100
+    
+    if 'Fastball' in summary.index:
+        fb_v = summary.loc['Fastball', '球速(平均)']
+        summary['球速比率(対FB %)'] = (summary['球速(平均)'] / fb_v) * 100
+    
+    return summary.style.format("{:.1f}")
 
 def main():
     st.title("⚾ ラプソード解析システム")
@@ -69,59 +90,50 @@ def main():
             
             st.header(f"📊 {p_name} のラプソード資料")
 
-            # --- 日ごとの平均とMAXを計算 ---
-            daily_stats = df.groupby(['日付', '球種'])['球速'].agg(['mean', 'max']).reset_index()
+            # 色設定
+            unique_pitches = sorted(df['球種'].unique())
+            pitch_colors = dict(zip(unique_pitches, sns.color_palette("husl", len(unique_pitches))))
 
-            # --- グラフ表示 ---
-            st.subheader("📈 球速推移分析")
-            col1, col2 = st.columns(2)
-            
-            with col1:
+            # グラフ表示
+            daily_stats = df.groupby(['日付', '球種'])['球速'].agg(['mean', 'max']).reset_index()
+            st.subheader("📈 球速・変化量分析")
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
                 fig_avg, ax_avg = plt.subplots()
-                sns.lineplot(data=daily_stats, x='日付', y='mean', hue='球種', marker='o', ax=ax_avg)
+                sns.lineplot(data=daily_stats, x='日付', y='mean', hue='球種', marker='o', ax=ax_avg, palette=pitch_colors)
                 ax_avg.set_title("球速（平均値）", fontproperties=prop)
-                ax_avg.set_xlabel("日付", fontproperties=prop)
-                ax_avg.set_ylabel("平均球速 (km/h)", fontproperties=prop)
                 plt.xticks(rotation=45)
                 st.pyplot(fig_avg)
-            
-            with col2:
-                fig_max, ax_max = plt.subplots()
-                sns.lineplot(data=daily_stats, x='日付', y='max', hue='球種', marker='o', ax=ax_max, palette="flare")
-                ax_max.set_title("球速（MAX値）", fontproperties=prop)
-                ax_max.set_xlabel("日付", fontproperties=prop)
-                ax_max.set_ylabel("最高球速 (km/h)", fontproperties=prop)
-                plt.xticks(rotation=45)
-                st.pyplot(fig_max)
+            with col_g2:
+                fig_mov, ax_mov = plt.subplots(figsize=(6, 6))
+                sns.scatterplot(data=df, x='横変化', y='高さ変化', hue='球種', s=100, ax=ax_mov, palette=pitch_colors)
+                ax_mov.axhline(0, color='black', lw=1); ax_mov.axvline(0, color='black', lw=1)
+                ax_mov.set_xlim(-70, 70); ax_mov.set_ylim(-70, 70)
+                ax_mov.set_title("変化量マップ", fontproperties=prop)
+                st.pyplot(fig_mov)
 
-            # --- 変化量グラフ ---
-            st.subheader("🎯 変化量分析")
+            # --- データの分割（今月 vs 前3か月） ---
+            latest_date = df['datetime'].max()
+            this_month_start = latest_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             
-            fig_mov, ax_mov = plt.subplots(figsize=(6, 6))
-            sns.scatterplot(data=df, x='横変化', y='高さ変化', hue='球種', s=100, ax=ax_mov)
-            ax_mov.axhline(0, color='black', lw=1); ax_mov.axvline(0, color='black', lw=1)
-            ax_mov.set_xlim(-70, 70); ax_mov.set_ylim(-70, 70)
-            ax_mov.set_title("変化量", fontproperties=prop)
-            ax_mov.set_xlabel("横変化量", fontproperties=prop)
-            ax_mov.set_ylabel("縦変化量", fontproperties=prop)
-            st.pyplot(fig_mov)
+            # 前3か月の開始日を計算 (例: 今が8月なら、5, 6, 7月のデータを取得)
+            three_months_ago_start = this_month_start - relativedelta(months=3)
+            
+            df_this_month = df[df['datetime'] >= this_month_start]
+            df_last_3_months = df[(df['datetime'] >= three_months_ago_start) & (df['datetime'] < this_month_start)]
 
-            # --- 集計表 ---
-            st.subheader("📋 球種別サマリー")
-            summary = df.groupby('球種').agg({
-                '球速': ['mean', 'max'], '回転数': 'mean', 'トゥルースピン': 'mean',
-                '回転効率': 'mean', '高さ変化': 'mean', '横変化': 'mean', 'ストライク数': 'mean'
-            })
-            summary.columns = [
-                '球速(平均)', '球速(最大)', '回転数', 'トゥルースピン', 
-                '回転効率(%)', '変化量(高さ)', '変化量(横)', 'ストライク率(%)'
-            ]
-            summary['ストライク率(%)'] = summary['ストライク率(%)'] * 100
-            if 'Fastball' in summary.index:
-                fb_v = summary.loc['Fastball', '球速(平均)']
-                summary['球速比率(対FB %)'] = (summary['球速(平均)'] / fb_v) * 100
-            
-            st.dataframe(summary.style.format("{:.1f}"))
+            # --- 表の表示 ---
+            st.subheader(f"📋 今月のサマリー ({latest_date.strftime('%Y年%m月')})")
+            if not df_this_month.empty:
+                st.dataframe(create_summary(df_this_month))
+            else:
+                st.info("今月のデータはありません。")
+
+            st.subheader(f"📋 直近3か月のサマリー ({three_months_ago_start.strftime('%Y/%m')} ～ { (this_month_start - timedelta(days=1)).strftime('%Y/%m') })")
+            if not df_last_3_months.empty:
+                st.dataframe(create_summary(df_last_3_months))
+            else:
+                st.info("指定期間（前3か月）のデータはありません。")
 
 if __name__ == "__main__":
     main()
