@@ -1,8 +1,0 @@
-streamlit
-pandas
-numpy
-matplotlib
-pyarrow
-google-api-python-client
-google-auth
-Pillow
