@@ -29,7 +29,10 @@ def process_data(uploaded_file):
         }
         df = df.rename(columns=rename_dict)
         
-        # 日付変換（時刻を切り捨てて「日」単位にする）
+        # --- 球種が「-」の行を完全に削除 ---
+        df = df[df['球種'] != '-']
+        
+        # 日付変換
         df['日付'] = pd.to_datetime(df['日付'], errors='coerce').dt.date
         
         if '判定' in df.columns:
@@ -56,10 +59,9 @@ def main():
             
             st.header(f"📊 {p_name} のラプソード資料")
 
-            # --- グラフ表示 ---
             col1, col2 = st.columns(2)
             with col1:
-                # 球速グラフ（日ごとにポイント、タイトル・軸名指定）
+                # 球速グラフ
                 fig1, ax1 = plt.subplots()
                 sns.stripplot(data=df, x='日付', y='球速', hue='球種', dodge=True, ax=ax1)
                 ax1.set_title("球速")
@@ -69,7 +71,7 @@ def main():
                 st.pyplot(fig1)
             
             with col2:
-                # 変化量グラフ（タイトル・軸名指定）
+                # 変化量グラフ
                 
                 fig2, ax2 = plt.subplots()
                 sns.scatterplot(data=df, x='横変化', y='高さ変化', hue='球種', s=100, ax=ax2)
@@ -80,7 +82,6 @@ def main():
                 ax2.set_ylabel("縦変化量")
                 st.pyplot(fig2)
 
-            # --- 集計表 ---
             st.subheader("📋 球種別サマリー")
             summary = df.groupby('球種').agg({
                 '球速': ['mean', 'max'], '回転数': 'mean', 'トゥルースピン': 'mean',
