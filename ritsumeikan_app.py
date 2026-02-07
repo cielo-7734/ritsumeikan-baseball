@@ -8,7 +8,6 @@ import os
 import io
 import csv
 from datetime import date, timedelta
-from dateutil.relativedelta import relativedelta
 
 # --- 完璧な日本語フォント設定 ---
 FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
@@ -41,13 +40,11 @@ def _decode_bytes(b: bytes):
             return b.decode(enc), enc
         except Exception:
             pass
-    # 最後の手段（落とさない）
     return b.decode("utf-8", errors="ignore"), "utf-8(ignore)"
 
 
 def process_data(uploaded_file):
     file_id = uploaded_file.name[:7]
-
     try:
         raw = uploaded_file.getvalue()
         text, used_enc = _decode_bytes(raw)
@@ -64,7 +61,6 @@ def process_data(uploaded_file):
         # pandas 用に BytesIO で読み直す
         bio = io.BytesIO(raw)
         df = pd.read_csv(bio, skiprows=4, encoding=used_enc)
-
         df.columns = [c.strip().replace('"', "") for c in df.columns]
 
         rename_dict = {
@@ -116,6 +112,7 @@ def process_data(uploaded_file):
 
 
 def create_summary(df):
+    """球種別に平均などを集計してDataFrameで返す"""
     if df.empty:
         return pd.DataFrame()
 
@@ -138,7 +135,7 @@ def create_summary(df):
         fb_v = summary.loc[summary["球種"] == "Fastball", "球速平均"].iloc[0]
         summary["球速比率(対FB %)"] = (summary["球速平均"] / fb_v) * 100
 
-    # 見せ方
+    # 見せ方：内部列「ストライク率」は非表示
     show_cols = [c for c in summary.columns if c not in ["ストライク率"]]
     return summary[show_cols]
 
@@ -174,13 +171,11 @@ def main():
                 data=daily_stats, x="日付", y="mean",
                 hue="球種", marker="o", ax=ax_avg, palette=pitch_colors
             )
-
             title_txt, x_txt, y_txt = ("球速（平均値）", "日付", "球速") if has_font else ("Velocity (Avg)", "Date", "Velocity")
             ax_avg.set_title(title_txt)
             ax_avg.set_xlabel(x_txt)
             ax_avg.set_ylabel(y_txt)
             plt.xticks(rotation=45)
-
             ax_avg.legend(prop=font_prop) if has_font else ax_avg.legend()
             st.pyplot(fig_avg)
 
@@ -190,40 +185,82 @@ def main():
                 data=df, x="横変化", y="高さ変化",
                 hue="球種", s=100, ax=ax_mov, palette=pitch_colors
             )
-
             title_txt, x_txt, y_txt = ("変化量プロット", "横変化", "高さ変化") if has_font else ("Movement", "HB", "VB")
             ax_mov.set_title(title_txt)
             ax_mov.set_xlabel(x_txt)
             ax_mov.set_ylabel(y_txt)
-
-            # 原点ライン
             ax_mov.axhline(0, linewidth=1)
             ax_mov.axvline(0, linewidth=1)
-
             ax_mov.legend(prop=font_prop) if has_font else ax_mov.legend()
             st.pyplot(fig_mov)
 
-        # --- サマリー ---
-        st.subheader("📌 球種別サマリー")
-        summary_df = create_summary(df)
-        if summary_df.empty:
-            st.warning("サマリーを作成できませんでした。")
+        # =========================
+        # サマリー（全体 / 直近30日 / 前月30日 / 差分）
+        # =========================
+        st.subheader("📌 球種別サマリー（全体 / 直近30日 / 前月30日）")
+
+        today = date.today()
+        this_start = today - timedelta(days=29)
+        this_end = today
+        prev_start = this_start - timedelta(days=30)
+        prev_end = this_start - timedelta(days=1)
+
+        df_all = df.copy()
+        df_this = df[(df["日付"] >= this_start) & (df["日付"] <= this_end)].copy()
+        df_prev = df[(df["日付"] >= prev_start) & (df["日付"] <= prev_end)].copy()
+
+        sum_all = create_summary(df_all)
+        sum_this = create_summary(df_this)
+        sum_prev = create_summary(df_prev)
+
+        fmt = {
+            "球速平均": "{:.1f}",
+            "球速最大": "{:.1f}",
+            "回転数": "{:.0f}",
+            "トゥルースピン": "{:.0f}",
+            "回転効率": "{:.1f}",
+            "変化量高さ": "{:.1f}",
+            "変化量横": "{:.1f}",
+            "ストライク率(%)": "{:.1f}",
+            "球速比率(対FB %)": "{:.1f}",
+        }
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.markdown("### 全体")
+            if sum_all.empty:
+                st.info("データなし")
+            else:
+                st.dataframe(sum_all.style.format(fmt), use_container_width=True)
+
+        with c2:
+            st.markdown(f"### 直近30日（{this_start}〜{this_end}）")
+            if sum_this.empty:
+                st.info("データなし（期間内の投球がありません）")
+            else:
+                st.dataframe(sum_this.style.format(fmt), use_container_width=True)
+
+        with c3:
+            st.markdown(f"### 前月30日（{prev_start}〜{prev_end}）")
+            if sum_prev.empty:
+                st.info("データなし（期間内の投球がありません）")
+            else:
+                st.dataframe(sum_prev.style.format(fmt), use_container_width=True)
+
+        st.subheader("📈 差分（直近30日 − 前月30日）")
+        if (not sum_this.empty) and (not sum_prev.empty):
+            a = sum_this.set_index("球種")
+            b = sum_prev.set_index("球種")
+            common = a.index.intersection(b.index)
+
+            diff_cols = ["球速平均", "回転数", "回転効率", "変化量高さ", "変化量横", "ストライク率(%)"]
+            # 片方にしかない球種は比較できないので common のみ
+            diff = (a.loc[common, diff_cols] - b.loc[common, diff_cols]).reset_index()
+
+            st.dataframe(diff.style.format({c: "{:.1f}" for c in diff_cols}), use_container_width=True)
         else:
-            # 表の表示（小数整形）
-            st.dataframe(
-                summary_df.style.format({
-                    "球速平均": "{:.1f}",
-                    "球速最大": "{:.1f}",
-                    "回転数": "{:.0f}",
-                    "トゥルースピン": "{:.0f}",
-                    "回転効率": "{:.1f}",
-                    "変化量高さ": "{:.1f}",
-                    "変化量横": "{:.1f}",
-                    "ストライク率(%)": "{:.1f}",
-                    "球速比率(対FB %)": "{:.1f}",
-                }),
-                use_container_width=True
-            )
+            st.info("直近30日または前月30日のデータが不足しているため差分を計算できません。")
 
 
 if __name__ == "__main__":
